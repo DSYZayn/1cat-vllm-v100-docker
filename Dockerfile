@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 1
 
-# Upgrade pip
-RUN python3 -m pip install --upgrade pip setuptools wheel
+# Upgrade pip (Ubuntu 24.04 enforces PEP 668)
+RUN python3 -m pip install --upgrade --break-system-packages pip setuptools wheel
 
 # Install 1Cat-vLLM wheel
 # Build arg: VLLM_WHEEL_URL must be provided
@@ -32,7 +32,7 @@ RUN if [ -z "$VLLM_WHEEL_URL" ]; then \
         exit 1; \
     fi
 
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         ${VLLM_WHEEL_URL}
 
