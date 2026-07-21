@@ -20,7 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 1
 
-# Bootstrap pip (avoid Debian pip RECORD file conflict)
+# Remove PEP 668 externally-managed marker (we're in a container, not a host)
+RUN rm -f /usr/lib/python3*/EXTERNALLY-MANAGED
+
+# Bootstrap pip
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3
 
 # Install 1Cat-vLLM wheel
