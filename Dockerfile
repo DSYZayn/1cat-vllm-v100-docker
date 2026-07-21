@@ -6,12 +6,11 @@ FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION} AS base
 
 ARG PYTHON_VERSION
 
-# Install Python 3.12 and system dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} \
         python${PYTHON_VERSION}-venv \
         python${PYTHON_VERSION}-dev \
-        python3-pip \
         curl \
         ca-certificates \
         libgomp1 \
@@ -21,8 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 1
 
-# Upgrade pip (Ubuntu 24.04 enforces PEP 668)
-RUN python3 -m pip install --upgrade --break-system-packages pip setuptools wheel
+# Bootstrap pip (avoid Debian pip RECORD file conflict)
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3
 
 # Install 1Cat-vLLM wheel
 # Build arg: VLLM_WHEEL_URL must be provided
@@ -32,7 +31,7 @@ RUN if [ -z "$VLLM_WHEEL_URL" ]; then \
         exit 1; \
     fi
 
-RUN pip install --no-cache-dir --break-system-packages \
+RUN pip install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         ${VLLM_WHEEL_URL}
 
