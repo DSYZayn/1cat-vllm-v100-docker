@@ -23,7 +23,7 @@ RUN if [ -z "$VLLM_WHEEL_URL" ]; then \
         exit 1; \
     fi
 
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         ${VLLM_WHEEL_URL}
 
