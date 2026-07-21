@@ -1,12 +1,16 @@
 ARG CUDA_VERSION=12.8.1
 ARG UBUNTU_VERSION=24.04
 ARG PYTHON_VERSION=3.12
+ARG CUDA_MAJOR_MINOR=12-8
 
 FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION} AS base
 
 ARG PYTHON_VERSION
+ARG CUDA_MAJOR_MINOR
 
-# Install system dependencies (gcc required for Triton JIT kernel compilation)
+# Install system dependencies
+# gcc+g++: Triton JIT + nvcc host compiler
+# cuda-nvcc: CUDA compiler for flash_qla/tilelang/tokenspeed JIT extension builds
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python${PYTHON_VERSION} \
         python${PYTHON_VERSION}-venv \
@@ -15,6 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libgomp1 \
         gcc \
+        g++ \
+        cuda-nvcc-${CUDA_MAJOR_MINOR} \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Python 3.12 as default
