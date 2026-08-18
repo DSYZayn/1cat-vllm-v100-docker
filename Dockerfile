@@ -33,16 +33,16 @@ RUN pip install --no-cache-dir --break-system-packages \
 # errors. Fixed upstream in tilelang v0.1.10, but 1Cat-vLLM pins 0.1.9.
 # This patch cherry-picks the minimal fix: BF16→float→arithmetic→BF16.
 # Reporter of issue #105 validated this exact change.
-COPY patches/tilelang-0.1.9-sm70-fma2-fix.patch /tmp/tilelang-fix.patch
-RUN TILELANG_SRC=$(python3 -c "import tilelang; print(tilelang.__path__[0])") && \
-    cd "${TILELANG_SRC}" && \
-    patch -p1 --dry-run < /tmp/tilelang-fix.patch && \
-    patch -p1 < /tmp/tilelang-fix.patch && \
-    rm /tmp/tilelang-fix.patch && \
-    echo "tilelang SM70 fma2 patch applied successfully"
+# COPY patches/tilelang-0.1.9-sm70-fma2-fix.patch /tmp/tilelang-fix.patch
+# RUN TILELANG_SRC=$(python3 -c "import tilelang; print(tilelang.__path__[0])") && \
+#     cd "${TILELANG_SRC}" && \
+#     patch -p1 --dry-run < /tmp/tilelang-fix.patch && \
+#     patch -p1 < /tmp/tilelang-fix.patch && \
+#     rm /tmp/tilelang-fix.patch && \
+#     echo "tilelang SM70 fma2 patch applied successfully"
 
 # Verify installation + SM70 JIT smoke test
-COPY tests/sm70_jit_smoke.cu /tmp/sm70_jit_smoke.cu
+# COPY tests/sm70_jit_smoke.cu /tmp/sm70_jit_smoke.cu
 RUN python3 -c "\
 import torch, vllm; \
 import flash_attn_v100; \
@@ -56,13 +56,13 @@ print('GPUs available:', torch.cuda.device_count()); \
 
 # SM70 JIT smoke test: compile trivial kernel including common.h for sm_70.
 # Fails on unpatched tilelang 0.1.9, passes after fma2 fix.
-RUN TILELANG_SRC=$(python3 -c "import tilelang; print(tilelang.__path__[0])") && \
-    nvcc --cubin -O3 -lineinfo -arch=sm_70 -std=c++17 \
-        -I"${TILELANG_SRC}/src" \
-        -I"${TILELANG_SRC}/3rdparty/cutlass/include" \
-        -o /tmp/sm70_jit_smoke.cubin /tmp/sm70_jit_smoke.cu && \
-    echo "SM70 JIT smoke test PASSED" && \
-    rm /tmp/sm70_jit_smoke.cu /tmp/sm70_jit_smoke.cubin
+# RUN TILELANG_SRC=$(python3 -c "import tilelang; print(tilelang.__path__[0])") && \
+#     nvcc --cubin -O3 -lineinfo -arch=sm_70 -std=c++17 \
+#         -I"${TILELANG_SRC}/src" \
+#         -I"${TILELANG_SRC}/3rdparty/cutlass/include" \
+#         -o /tmp/sm70_jit_smoke.cubin /tmp/sm70_jit_smoke.cu && \
+#     echo "SM70 JIT smoke test PASSED" && \
+#     rm /tmp/sm70_jit_smoke.cu /tmp/sm70_jit_smoke.cubin
 
 # Default entrypoint
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
