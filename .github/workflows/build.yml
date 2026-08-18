@@ -2,8 +2,8 @@
 name: build
 on:
   schedule:
-    # Daily at 03:00 UTC
-    - cron: '0 3 * * *'
+    # Daily at 03:00 UTC+8 (19:00 UTC previous day)
+    - cron: '0 19 * * *'
   workflow_dispatch:
     inputs:
       version:
@@ -27,6 +27,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Determine latest 1Cat-vLLM release
         id: check
         run: |
@@ -46,29 +53,12 @@ jobs:
           echo "Wheel URL: ${WHEEL_URL}"
 
           # Check if image already exists
-          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}"
+          IMAGE_LOWER=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG="${{ env.REGISTRY }}/${IMAGE_LOWER}:${VERSION}"
           echo "Checking if ${IMAGE_TAG} already exists..."
 
-          # Use GitHub API to check if package tag exists
-          # ghcr.io doesn't have a simple tag-exists API, so we use crane or docker manifest
-          # For simplicity, check via the GitHub Packages API
-          RESPONSE=$(curl -sL -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://ghcr.io/v2/$(echo ${{ env.IMAGE_NAME }} | tr '[:upper:]' '[:lower:]')/manifests/${VERSION}" \
-            -H "Accept: application/vnd.oci.image.manifest.v1+json" 2>/dev/null || echo "000")
-
-          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "401" ]; then
-            # 401 means registry needs auth but tag might exist -- try pulling manifest with token
-            TOKEN=$(curl -sL "https://ghcr.io/token?scope=repository:${{ env.IMAGE_NAME }}:pull" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null)
-            if [ -n "$TOKEN" ]; then
-              RESPONSE=$(curl -sL -o /dev/null -w "%{http_code}" \
-                -H "Authorization: Bearer $TOKEN" \
-                -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-                "https://ghcr.io/v2/$(echo ${{ env.IMAGE_NAME }} | tr '[:upper:]' '[:lower:]')/manifests/${VERSION}" 2>/dev/null || echo "000")
-            fi
-          fi
-
-          if [ "$RESPONSE" = "200" ]; then
+          # Authenticated manifest check is more stable than raw API probing.
+          if docker manifest inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
             echo "Image ${IMAGE_TAG} already exists. Skipping build."
             echo "should_build=false" >> $GITHUB_OUTPUT
           else
