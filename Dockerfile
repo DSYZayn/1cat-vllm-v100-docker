@@ -5,7 +5,7 @@ ARG PYTHON_VERSION=3.12
 # nvcc, g++, PyTorch cu128, cudnn9. No extra toolchain needed.
 FROM pytorch/pytorch:2.10.0-cuda${CUDA_VERSION}-cudnn9-devel
 
-LABEL maintainer="renne"
+LABEL maintainer="dsyzayn"
 LABEL description="1Cat-vLLM SM70/V100 optimized vLLM fork with OpenAI-compatible API server"
 
 # Install runtime dependencies
