@@ -15,14 +15,14 @@ extensions (flash_attn_v100, paged_kv_utils, Marlin SM70) -- no source
 compilation needed during Docker build.
 
 The resulting image is published to:
-- `ghcr.io/renne/1cat-vllm-v100:<release-tag>` (e.g. `v1.2.2`)
-- `ghcr.io/renne/1cat-vllm-v100:latest`
+- `ghcr.io/dsyzayn/1cat-vllm-v100-docker:<release-tag>` (e.g. `v1.3.0`)
+- `ghcr.io/dsyzayn/1cat-vllm-v100-docker:latest`
 
 ## Build Triggers
 
 | Trigger | Schedule | Action |
 |---------|----------|--------|
-| Daily cron | 03:00 UTC every day | Check 1CatAI/1Cat-vLLM latest release. If new tag since last build, build + push. If unchanged, skip (no minutes wasted). |
+| Daily cron | 03:00 UTC+8 every day | Check 1CatAI/1Cat-vLLM latest release. If new tag since last build, build + push. If unchanged, skip (no minutes wasted). |
 | Manual | On demand | Workflow dispatch with optional version override. Always builds + pushes. |
 
 A new 1Cat-vLLM release published today will be available as a Docker image
