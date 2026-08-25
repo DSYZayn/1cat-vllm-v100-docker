@@ -1,0 +1,175 @@
+name: Build Stable Docker Image
+
+on:
+  schedule:
+    # Daily at 03:00 UTC+8 (19:00 UTC previous day)
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable 1Cat-vLLM release tag (e.g. v1.2.2). Leave empty for latest.'
+        required: false
+        type: string
+
+concurrency:
+  group: stable-build-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  packages: write
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  STABLE_WHEEL_REPOSITORY: 1CatAI/1Cat-vLLM
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.metadata.outputs.should_build }}
+      version_tag: ${{ steps.metadata.outputs.version_tag }}
+      wheel_url: ${{ steps.metadata.outputs.wheel_url }}
+      is_latest: ${{ steps.metadata.outputs.is_latest }}
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve stable release metadata
+        id: metadata
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_lower="$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${image_lower}"
+
+          latest_json="$(gh api "repos/${STABLE_WHEEL_REPOSITORY}/releases/latest")"
+          latest_tag="$(jq -r '.tag_name' <<< "${latest_json}")"
+          version_tag="${VERSION_INPUT:-${latest_tag}}"
+
+          if [[ ! "${version_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Stable release tag is not a semantic version: ${version_tag}" >&2
+            exit 1
+          fi
+
+          if [[ "${version_tag}" == "${latest_tag}" ]]; then
+            release_json="${latest_json}"
+            is_latest=true
+          else
+            release_json="$(gh api "repos/${STABLE_WHEEL_REPOSITORY}/releases/tags/${version_tag}")"
+            is_latest=false
+          fi
+
+          wheel_name="$(jq -r \
+            '([.assets[]? | select(.name | test("cp312-cp312-linux_x86_64\\.whl$"))] | .[0].name) // empty' \
+            <<< "${release_json}")"
+          wheel_url="$(jq -r --arg name "${wheel_name}" \
+            '.assets[]? | select(.name == $name) | .browser_download_url' \
+            <<< "${release_json}")"
+          if [[ -z "${wheel_name}" || -z "${wheel_url}" ]]; then
+            echo "No compatible stable cp312 Linux x86_64 wheel found for ${version_tag}." >&2
+            exit 1
+          fi
+
+          should_build=false
+          if ! docker manifest inspect "${image}:${version_tag}" >/dev/null 2>&1; then
+            should_build=true
+          fi
+          if [[ "${is_latest}" == true ]] && \
+             ! docker manifest inspect "${image}:latest" >/dev/null 2>&1; then
+            should_build=true
+          fi
+
+          echo "Stable release: ${version_tag} (latest=${latest_tag})"
+          echo "Stable wheel: ${wheel_name}"
+          echo "Stable image build: ${should_build}"
+
+          {
+            echo "should_build=${should_build}"
+            echo "version_tag=${version_tag}"
+            echo "wheel_url=${wheel_url}"
+            echo "is_latest=${is_latest}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          REGISTRY: ${{ env.REGISTRY }}
+          VERSION: ${{ needs.check.outputs.version_tag }}
+          IS_LATEST: ${{ needs.check.outputs.is_latest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_lower="$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${image_lower}"
+          {
+            echo "image=${image}"
+            echo "tags<<TAGS"
+            echo "${image}:${VERSION}"
+            if [[ "${IS_LATEST}" == true ]]; then
+              echo "${image}:latest"
+            fi
+            echo "TAGS"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push stable image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VLLM_WHEEL_URL=${{ needs.check.outputs.wheel_url }}
+            VLLM_WHEEL_RELEASE_TAG=${{ needs.check.outputs.version_tag }}
+            VLLM_IMAGE_TAG=${{ needs.check.outputs.version_tag }}
+            VLLM_IMAGE_KIND=stable
+          cache-from: type=gha,scope=stable
+          cache-to: type=gha,mode=max,scope=stable
+
+      - name: Stable image summary
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          VERSION: ${{ needs.check.outputs.version_tag }}
+          IS_LATEST: ${{ needs.check.outputs.is_latest }}
+          WHEEL_URL: ${{ needs.check.outputs.wheel_url }}
+        shell: bash
+        run: |
+          {
+            echo "### Stable Docker Image Built"
+            echo
+            echo "Image: \`${IMAGE}:${VERSION}\`"
+            if [[ "${IS_LATEST}" == true ]]; then
+              echo "Also tagged: \`${IMAGE}:latest\`"
+            fi
+            echo
+            echo "Wheel: ${WHEEL_URL}"
+          } >> "${GITHUB_STEP_SUMMARY}"

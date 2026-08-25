@@ -1,0 +1,170 @@
+name: Build Rolling Docker Image
+
+on:
+  repository_dispatch:
+    types:
+      - rolling-wheel-published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Rolling wheel release tag, e.g. v1.3.0-native-rolling. Leave empty for newest.'
+        required: false
+        type: string
+
+concurrency:
+  group: rolling-build-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  packages: write
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  ROLLING_WHEEL_REPOSITORY: DSYZayn/1Cat-vLLM
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      image_tag: ${{ steps.metadata.outputs.image_tag }}
+      wheel_url: ${{ steps.metadata.outputs.wheel_url }}
+      updated_at: ${{ steps.metadata.outputs.updated_at }}
+    steps:
+      - name: Resolve rolling release metadata
+        id: metadata
+        env:
+          EVENT_RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          requested_tag="${EVENT_RELEASE_TAG:-${INPUT_RELEASE_TAG}}"
+          if [[ -n "${requested_tag}" ]]; then
+            if [[ ! "${requested_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)$ ]]; then
+              echo "Invalid rolling release tag: ${requested_tag}" >&2
+              exit 1
+            fi
+            release_json="$(gh api \
+              "repos/${ROLLING_WHEEL_REPOSITORY}/releases/tags/${requested_tag}")"
+          else
+            releases_json="$(gh api \
+              "repos/${ROLLING_WHEEL_REPOSITORY}/releases?per_page=100")"
+            release_json="$(jq -c '
+              map(select(
+                .prerelease == true and
+                (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(rolling|native-rolling)$"))
+              ))
+              | sort_by(.updated_at // .published_at // .created_at)
+              | last // empty
+            ' <<< "${releases_json}")"
+          fi
+
+          if [[ -z "${release_json}" ]]; then
+            echo "No rolling wheel release was found." >&2
+            exit 1
+          fi
+
+          release_tag="$(jq -r '.tag_name' <<< "${release_json}")"
+          updated_at="$(jq -r '.updated_at // .published_at // .created_at' <<< "${release_json}")"
+          wheel_name="$(jq -r \
+            '([.assets[]? | select(.name | test("cp312-cp312-linux_x86_64\\.whl$"))] | .[0].name) // empty' \
+            <<< "${release_json}")"
+          wheel_url="$(jq -r --arg name "${wheel_name}" \
+            '.assets[]? | select(.name == $name) | .browser_download_url' \
+            <<< "${release_json}")"
+
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)$ ]]; then
+            echo "Release is not a rolling release: ${release_tag}" >&2
+            exit 1
+          fi
+          if [[ -z "${wheel_name}" || -z "${wheel_url}" ]]; then
+            echo "No compatible rolling cp312 Linux x86_64 wheel found for ${release_tag}." >&2
+            exit 1
+          fi
+          if [[ ! "${wheel_name}" =~ ^1cat_vllm-([0-9]+\.[0-9]+\.[0-9]+)\.post([0-9]{8})-cp312-cp312-linux_x86_64\.whl$ ]]; then
+            echo "Unexpected rolling wheel name: ${wheel_name}" >&2
+            exit 1
+          fi
+
+          image_tag="v${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+          echo "Rolling release: ${release_tag}"
+          echo "Rolling wheel: ${wheel_name}"
+          echo "Rolling image tag: ${image_tag}"
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "image_tag=${image_tag}"
+            echo "wheel_url=${wheel_url}"
+            echo "updated_at=${updated_at}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          REGISTRY: ${{ env.REGISTRY }}
+          VERSION: ${{ needs.check.outputs.image_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_lower="$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${image_lower}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${image}:${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push rolling image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tag }}
+          build-args: |
+            VLLM_WHEEL_URL=${{ needs.check.outputs.wheel_url }}
+            VLLM_WHEEL_RELEASE_TAG=${{ needs.check.outputs.release_tag }}
+            VLLM_IMAGE_TAG=${{ needs.check.outputs.image_tag }}
+            VLLM_IMAGE_KIND=rolling
+          cache-from: type=gha,scope=rolling
+          cache-to: type=gha,mode=max,scope=rolling
+
+      - name: Rolling image summary
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          VERSION: ${{ needs.check.outputs.image_tag }}
+          SOURCE_RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+          UPDATED_AT: ${{ needs.check.outputs.updated_at }}
+          WHEEL_URL: ${{ needs.check.outputs.wheel_url }}
+        shell: bash
+        run: |
+          {
+            echo "### Rolling Docker Image Built"
+            echo
+            echo "Image: \`${IMAGE}:${VERSION}\`"
+            echo "Source wheel release: ${SOURCE_RELEASE_TAG}"
+            echo "Source wheel release updated: ${UPDATED_AT}"
+            echo "Wheel: ${WHEEL_URL}"
+            echo
+            echo "The rolling image has no \`latest\` tag."
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -30,9 +30,9 @@ updated by a build using the newest stable wheel from `1CatAI/1Cat-vLLM`.
 
 | Trigger | Schedule | Action |
 |---------|----------|--------|
-| Daily cron | 03:00 UTC+8 every day | Check the newest stable wheel from `1CatAI/1Cat-vLLM` and build the stable image when needed. |
-| Rolling wheel hook | After `DSYZayn/1Cat-vLLM` publishes a rolling wheel | Build the matching rolling image immediately. |
-| Manual | On demand | Check stable and rolling channels. The optional `version` input selects a stable release only. |
+| `Build Stable Docker Image` schedule | 03:00 UTC+8 every day | Check the newest stable wheel from `1CatAI/1Cat-vLLM` and build the stable image when needed. |
+| `Build Rolling Docker Image` hook | After `DSYZayn/1Cat-vLLM` publishes a rolling wheel | Build the matching rolling image immediately. |
+| Manual | On demand | Run either workflow independently. Stable accepts a release `version`; rolling accepts a rolling `release_tag`. |
 
 A new stable release published before the daily run will be available after
 that run. A rolling image is triggered by the source repository's publish hook,
