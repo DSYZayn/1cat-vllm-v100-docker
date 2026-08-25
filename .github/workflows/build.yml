@@ -7,22 +7,37 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '1Cat-vLLM version tag (e.g. v1.2.2). Leave empty for latest.'
+        description: 'Stable 1Cat-vLLM release tag (e.g. v1.2.2). Leave empty for latest.'
         required: false
         type: string
+  repository_dispatch:
+    types:
+      - rolling-wheel-published
+concurrency:
+  group: build-${{ github.repository }}
+  cancel-in-progress: false
 permissions:
   packages: write
   contents: read
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  STABLE_WHEEL_REPOSITORY: 1CatAI/1Cat-vLLM
+  ROLLING_WHEEL_REPOSITORY: DSYZayn/1Cat-vLLM
+  GH_TOKEN: ${{ github.token }}
 jobs:
   check-and-build:
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
-      version_tag: ${{ steps.check.outputs.version_tag }}
-      wheel_url: ${{ steps.check.outputs.wheel_url }}
+      stable_should_build: ${{ steps.check.outputs.stable_should_build }}
+      stable_version_tag: ${{ steps.check.outputs.stable_version_tag }}
+      stable_wheel_url: ${{ steps.check.outputs.stable_wheel_url }}
+      stable_is_latest: ${{ steps.check.outputs.stable_is_latest }}
+      rolling_should_build: ${{ steps.check.outputs.rolling_should_build }}
+      rolling_release_tag: ${{ steps.check.outputs.rolling_release_tag }}
+      rolling_image_tag: ${{ steps.check.outputs.rolling_image_tag }}
+      rolling_wheel_url: ${{ steps.check.outputs.rolling_wheel_url }}
+      rolling_updated_at: ${{ steps.check.outputs.rolling_updated_at }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,44 +49,189 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine latest 1Cat-vLLM release
+      - name: Determine stable and rolling wheel updates
         id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          STABLE_VERSION_INPUT: ${{ inputs.version }}
+          ROLLING_RELEASE_TAG_INPUT: ${{ github.event.client_payload.release_tag }}
         run: |
-          # Get latest release (or use input)
-          if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION=$(curl -sL "https://api.github.com/repos/1CatAI/1Cat-vLLM/releases/latest" | \
-              python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+          set -euo pipefail
+
+          image_lower="$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${image_lower}"
+          stable_version_input="${STABLE_VERSION_INPUT}"
+
+          stable_latest_json="$(gh api "repos/${STABLE_WHEEL_REPOSITORY}/releases/latest")"
+          stable_latest_tag="$(jq -r '.tag_name' <<< "${stable_latest_json}")"
+          stable_tag="${stable_version_input:-${stable_latest_tag}}"
+
+          if [[ ! "${stable_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Stable release tag is not a semantic version: ${stable_tag}" >&2
+            exit 1
           fi
 
-          echo "Latest 1Cat-vLLM release: ${VERSION}"
-
-          # Construct wheel URL
-          WHEEL_URL="https://github.com/1CatAI/1Cat-vLLM/releases/download/${VERSION}/1cat_vllm-$(echo ${VERSION} | sed 's/v//')-cp312-cp312-linux_x86_64.whl"
-
-          echo "Wheel URL: ${WHEEL_URL}"
-
-          # Check if image already exists
-          IMAGE_LOWER=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_TAG="${{ env.REGISTRY }}/${IMAGE_LOWER}:${VERSION}"
-          echo "Checking if ${IMAGE_TAG} already exists..."
-
-          # Authenticated manifest check is more stable than raw API probing.
-          if docker manifest inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
-            echo "Image ${IMAGE_TAG} already exists. Skipping build."
-            echo "should_build=false" >> $GITHUB_OUTPUT
+          if [[ "${stable_tag}" == "${stable_latest_tag}" ]]; then
+            stable_json="${stable_latest_json}"
+            stable_is_latest=true
           else
-            echo "Image ${IMAGE_TAG} does not exist. Will build."
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            stable_json="$(gh api "repos/${STABLE_WHEEL_REPOSITORY}/releases/tags/${stable_tag}")"
+            stable_is_latest=false
           fi
 
-          echo "version_tag=${VERSION}" >> $GITHUB_OUTPUT
-          echo "wheel_url=${WHEEL_URL}" >> $GITHUB_OUTPUT
+          stable_wheel_name="$(jq -r \
+            '([.assets[]? | select(.name | test("cp312-cp312-linux_x86_64\\.whl$"))] | .[0].name) // empty' \
+            <<< "${stable_json}")"
+          stable_wheel_url="$(jq -r --arg name "${stable_wheel_name}" \
+            '.assets[]? | select(.name == $name) | .browser_download_url' \
+            <<< "${stable_json}")"
+          if [[ -z "${stable_wheel_name}" || -z "${stable_wheel_url}" ]]; then
+            echo "No compatible stable cp312 Linux x86_64 wheel found for ${stable_tag}." >&2
+            exit 1
+          fi
 
-  build:
+          stable_image_tag="${image}:${stable_tag}"
+          stable_should_build=false
+          if ! docker manifest inspect "${stable_image_tag}" >/dev/null 2>&1; then
+            stable_should_build=true
+          fi
+          if [[ "${stable_is_latest}" == true ]] && \
+             ! docker manifest inspect "${image}:latest" >/dev/null 2>&1; then
+            stable_should_build=true
+          fi
+
+          if [[ "${EVENT_NAME}" == "repository_dispatch" ]]; then
+            stable_should_build=false
+          fi
+
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            {
+              echo "stable_should_build=${stable_should_build}"
+              echo "stable_version_tag=${stable_tag}"
+              echo "stable_wheel_url=${stable_wheel_url}"
+              echo "stable_is_latest=${stable_is_latest}"
+              echo "rolling_should_build=false"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ -n "${ROLLING_RELEASE_TAG_INPUT}" ]]; then
+            if [[ ! "${ROLLING_RELEASE_TAG_INPUT}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)$ ]]; then
+              echo "Invalid rolling release tag: ${ROLLING_RELEASE_TAG_INPUT}" >&2
+              exit 1
+            fi
+            rolling_release_json="$(gh api \
+              "repos/${ROLLING_WHEEL_REPOSITORY}/releases/tags/${ROLLING_RELEASE_TAG_INPUT}")"
+            rolling_metadata="$(jq -c '
+              select(
+                .prerelease == true and
+                (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(rolling|native-rolling)$"))
+              )
+              | ([.assets[]? | select(.name | test("cp312-cp312-linux_x86_64\\.whl$"))] | .[0]) as $wheel
+              | select($wheel != null)
+              | {
+                  tag: .tag_name,
+                  updated_at: (.updated_at // .published_at // .created_at),
+                  wheel_name: $wheel.name,
+                  wheel_url: $wheel.browser_download_url
+                }
+            ' <<< "${rolling_release_json}")"
+          else
+            rolling_releases_json="$(gh api \
+              "repos/${ROLLING_WHEEL_REPOSITORY}/releases?per_page=100")"
+            rolling_metadata="$(jq -c '
+              map(select(
+                .prerelease == true and
+                (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(rolling|native-rolling)$"))
+              ))
+              | map(
+                  . as $release
+                  | ([.assets[]? | select(.name | test("cp312-cp312-linux_x86_64\\.whl$"))] | .[0]) as $wheel
+                  | select($wheel != null)
+                  | {
+                      tag: .tag_name,
+                      updated_at: (.updated_at // .published_at // .created_at),
+                      wheel_name: $wheel.name,
+                      wheel_url: $wheel.browser_download_url
+                    }
+                )
+              | sort_by(.updated_at)
+              | last // empty
+            ' <<< "${rolling_releases_json}")"
+          fi
+
+          if [[ -z "${rolling_metadata}" ]]; then
+            echo "No compatible rolling cp312 Linux x86_64 wheel release found."
+            {
+              echo "stable_should_build=${stable_should_build}"
+              echo "stable_version_tag=${stable_tag}"
+              echo "stable_wheel_url=${stable_wheel_url}"
+              echo "stable_is_latest=${stable_is_latest}"
+              echo "rolling_should_build=false"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          rolling_tag="$(jq -r '.tag' <<< "${rolling_metadata}")"
+          rolling_updated_at="$(jq -r '.updated_at' <<< "${rolling_metadata}")"
+          rolling_wheel_name="$(jq -r '.wheel_name' <<< "${rolling_metadata}")"
+          rolling_wheel_url="$(jq -r '.wheel_url' <<< "${rolling_metadata}")"
+
+          if [[ ! "${rolling_wheel_name}" =~ ^1cat_vllm-([0-9]+\.[0-9]+\.[0-9]+)\.post([0-9]{8})-cp312-cp312-linux_x86_64\.whl$ ]]; then
+            echo "Unexpected rolling wheel name: ${rolling_wheel_name}" >&2
+            exit 1
+          fi
+          rolling_image_tag="v${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+
+          # A rolling release keeps the same tag while replacing its wheel.
+          # Compare the source release update time with the matching GHCR
+          # package version instead of checking only whether the image tag exists.
+          rolling_image_updated_at=""
+          package_name="$(basename "${image_lower}")"
+          if package_versions="$(gh api --paginate --slurp \
+            "users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package_name}/versions?per_page=100" \
+            | jq 'flatten' 2>/dev/null)"; then
+            rolling_image_updated_at="$(jq -r --arg tag "${rolling_image_tag}" '
+              map(select(((.metadata.container.tags // []) | index($tag)) != null))
+              | map(.updated_at // .created_at)
+              | sort
+              | last // empty
+            ' <<< "${package_versions}")"
+          fi
+
+          rolling_should_build=true
+          if [[ "${EVENT_NAME}" != "repository_dispatch" && \
+                -n "${rolling_image_updated_at}" ]]; then
+            rolling_release_epoch="$(date -u -d "${rolling_updated_at}" +%s)"
+            rolling_image_epoch="$(date -u -d "${rolling_image_updated_at}" +%s)"
+            if (( rolling_image_epoch >= rolling_release_epoch )); then
+              rolling_should_build=false
+            fi
+          fi
+
+          echo "Stable release: ${stable_tag} (latest=${stable_latest_tag})"
+          echo "Stable wheel: ${stable_wheel_name}"
+          echo "Stable image build: ${stable_should_build}"
+          echo "Rolling release: ${rolling_tag} (updated ${rolling_updated_at})"
+          echo "Rolling image tag: ${rolling_image_tag}"
+          echo "Rolling wheel: ${rolling_wheel_name}"
+          echo "Rolling image build: ${rolling_should_build}"
+
+          {
+            echo "stable_should_build=${stable_should_build}"
+            echo "stable_version_tag=${stable_tag}"
+            echo "stable_wheel_url=${stable_wheel_url}"
+            echo "stable_is_latest=${stable_is_latest}"
+            echo "rolling_should_build=${rolling_should_build}"
+            echo "rolling_release_tag=${rolling_tag}"
+            echo "rolling_image_tag=${rolling_image_tag}"
+            echo "rolling_wheel_url=${rolling_wheel_url}"
+            echo "rolling_updated_at=${rolling_updated_at}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build-stable:
     needs: check-and-build
-    if: needs.check-and-build.outputs.should_build == 'true'
+    if: needs.check-and-build.outputs.stable_should_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -87,34 +247,120 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract stable image metadata
         id: meta
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          REGISTRY: ${{ env.REGISTRY }}
+          VERSION: ${{ needs.check-and-build.outputs.stable_version_tag }}
+          IS_LATEST: ${{ needs.check-and-build.outputs.stable_is_latest }}
         run: |
-          VERSION="${{ needs.check-and-build.outputs.version_tag }}"
-          IMAGE_LOWER=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-          echo "image=${{ env.REGISTRY }}/${IMAGE_LOWER}" >> $GITHUB_OUTPUT
-          echo "tag=${VERSION}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          image_lower="$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${image_lower}"
+          {
+            echo "image=${image}"
+            echo "tags<<TAGS"
+            echo "${image}:${VERSION}"
+            if [[ "${IS_LATEST}" == true ]]; then
+              echo "${image}:latest"
+            fi
+            echo "TAGS"
+          } >> "${GITHUB_OUTPUT}"
 
-      - name: Build and push
+      - name: Build and push stable image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
-            ${{ steps.meta.outputs.image }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            VLLM_WHEEL_URL=${{ needs.check-and-build.outputs.wheel_url }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            VLLM_WHEEL_URL=${{ needs.check-and-build.outputs.stable_wheel_url }}
+            VLLM_WHEEL_RELEASE_TAG=${{ needs.check-and-build.outputs.stable_version_tag }}
+            VLLM_IMAGE_TAG=${{ needs.check-and-build.outputs.stable_version_tag }}
+            VLLM_IMAGE_KIND=stable
+          cache-from: type=gha,scope=stable
+          cache-to: type=gha,mode=max,scope=stable
 
-      - name: Summary
+      - name: Stable image summary
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          VERSION: ${{ needs.check-and-build.outputs.stable_version_tag }}
+          IS_LATEST: ${{ needs.check-and-build.outputs.stable_is_latest }}
+          WHEEL_URL: ${{ needs.check-and-build.outputs.stable_wheel_url }}
         run: |
-          echo "### Docker Image Built" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Image: \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "Also tagged: \`${{ steps.meta.outputs.image }}:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "1Cat-vLLM version: ${{ needs.check-and-build.outputs.version_tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "Wheel: ${{ needs.check-and-build.outputs.wheel_url }}" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### Stable Docker Image Built"
+            echo
+            echo "Image: \`${IMAGE}:${VERSION}\`"
+            if [[ "${IS_LATEST}" == true ]]; then
+              echo "Also tagged: \`${IMAGE}:latest\`"
+            fi
+            echo
+            echo "Wheel: ${WHEEL_URL}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+  build-rolling:
+    needs: check-and-build
+    if: needs.check-and-build.outputs.rolling_should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract rolling image metadata
+        id: meta
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          REGISTRY: ${{ env.REGISTRY }}
+          VERSION: ${{ needs.check-and-build.outputs.rolling_image_tag }}
+        run: |
+          set -euo pipefail
+          image_lower="$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${image_lower}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${image}:${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push rolling image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tag }}
+          build-args: |
+            VLLM_WHEEL_URL=${{ needs.check-and-build.outputs.rolling_wheel_url }}
+            VLLM_WHEEL_RELEASE_TAG=${{ needs.check-and-build.outputs.rolling_release_tag }}
+            VLLM_IMAGE_TAG=${{ needs.check-and-build.outputs.rolling_image_tag }}
+            VLLM_IMAGE_KIND=rolling
+          cache-from: type=gha,scope=rolling
+          cache-to: type=gha,mode=max,scope=rolling
+
+      - name: Rolling image summary
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          VERSION: ${{ needs.check-and-build.outputs.rolling_image_tag }}
+          SOURCE_RELEASE_TAG: ${{ needs.check-and-build.outputs.rolling_release_tag }}
+          UPDATED_AT: ${{ needs.check-and-build.outputs.rolling_updated_at }}
+          WHEEL_URL: ${{ needs.check-and-build.outputs.rolling_wheel_url }}
+        run: |
+          {
+            echo "### Rolling Docker Image Built"
+            echo
+            echo "Image: \`${IMAGE}:${VERSION}\`"
+            echo "Source wheel release: ${SOURCE_RELEASE_TAG}"
+            echo "Source wheel release updated: ${UPDATED_AT}"
+            echo "Wheel: ${WHEEL_URL}"
+            echo
+            echo "The rolling image has no \`latest\` tag."
+          } >> "${GITHUB_STEP_SUMMARY}"

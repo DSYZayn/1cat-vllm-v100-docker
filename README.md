@@ -14,19 +14,34 @@ A Docker image that installs the latest 1Cat-vLLM Python wheel on top of
 extensions (flash_attn_v100, paged_kv_utils, Marlin SM70) -- no source
 compilation needed during Docker build.
 
-The resulting image is published to:
+The resulting stable image is published to:
 - `ghcr.io/dsyzayn/1cat-vllm-v100-docker:<release-tag>` (e.g. `v1.3.0`)
 - `ghcr.io/dsyzayn/1cat-vllm-v100-docker:latest`
+
+Rolling wheels from the development repository are published separately, for
+example:
+- `ghcr.io/dsyzayn/1cat-vllm-v100-docker:v1.3.0-20260825`
+
+The rolling image tag contains only the stable version and wheel build date.
+Rolling tags never update `latest` or any stable release tag. `latest` is only
+updated by a build using the newest stable wheel from `1CatAI/1Cat-vLLM`.
 
 ## Build Triggers
 
 | Trigger | Schedule | Action |
 |---------|----------|--------|
-| Daily cron | 03:00 UTC+8 every day | Check 1CatAI/1Cat-vLLM latest release. If new tag since last build, build + push. If unchanged, skip (no minutes wasted). |
-| Manual | On demand | Workflow dispatch with optional version override. Always builds + pushes. |
+| Daily cron | 03:00 UTC+8 every day | Check the newest stable wheel from `1CatAI/1Cat-vLLM` and build the stable image when needed. |
+| Rolling wheel hook | After `DSYZayn/1Cat-vLLM` publishes a rolling wheel | Build the matching rolling image immediately. |
+| Manual | On demand | Check stable and rolling channels. The optional `version` input selects a stable release only. |
 
-A new 1Cat-vLLM release published today will be available as a Docker image
-by 03:00 UTC the following day.
+A new stable release published before the daily run will be available after
+that run. A rolling image is triggered by the source repository's publish hook,
+not by the daily schedule, and is never aliased to `latest`.
+
+The source repository must define a `DOCKER_REPOSITORY_DISPATCH_TOKEN` secret
+with permission to dispatch workflows in this repository. Without that secret,
+the wheel publish still succeeds but the hook emits a warning and no rolling
+image is built.
 
 ## Image Details
 
@@ -35,7 +50,7 @@ by 03:00 UTC the following day.
 | Base image | `nvidia/cuda:12.8.1-runtime-ubuntu24.04` |
 | Python | 3.12 |
 | CUDA | 12.8.1 (last with full SM70 support; CUDA 13.0+ dropped V100) |
-| 1Cat-vLLM | Latest release wheel (cp312 linux_x86_64) |
+| 1Cat-vLLM | Stable or rolling cp312 Linux x86_64 wheel |
 | Entrypoint | `python -m vllm.entrypoints.openai.api_server` |
 | Image size | ~3.5 GB |
 
@@ -56,6 +71,9 @@ docker run --gpus all -p 8000:8000 \
   --enable-chunked-prefill \
   --host 0.0.0.0 --port 8000
 ```
+
+To test a rolling build, replace the image with a date tag such as
+`ghcr.io/dsyzayn/1cat-vllm-v100-docker:v1.3.0-20260825`.
 
 See the [1Cat-vLLM skill](https://github.com/1CatAI/1Cat-vLLM) for full
 launch parameters, model recommendations, and V100-specific notes.

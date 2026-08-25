@@ -8,6 +8,13 @@ FROM pytorch/pytorch:2.10.0-cuda${CUDA_VERSION}-cudnn9-devel
 LABEL maintainer="dsyzayn"
 LABEL description="1Cat-vLLM SM70/V100 optimized vLLM fork with OpenAI-compatible API server"
 
+ARG VLLM_WHEEL_RELEASE_TAG=unknown
+ARG VLLM_IMAGE_TAG=unknown
+ARG VLLM_IMAGE_KIND=unknown
+LABEL org.opencontainers.image.version="${VLLM_IMAGE_TAG}" \
+      org.opencontainers.image.revision="${VLLM_WHEEL_RELEASE_TAG}" \
+      org.opencontainers.image.variant="${VLLM_IMAGE_KIND}"
+
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
