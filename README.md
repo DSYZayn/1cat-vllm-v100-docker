@@ -22,7 +22,9 @@ Rolling wheels from the development repository are published separately, for
 example:
 - `ghcr.io/dsyzayn/1cat-vllm-v100-docker:v1.3.0-20260825`
 
-The rolling image tag contains only the stable version and wheel build date.
+Each rolling build also creates an immutable GitHub prerelease named
+`rolling-v1.3.0-20260825` in this repository. The rolling image tag contains
+only the stable version and wheel build date.
 Rolling tags never update `latest` or any stable release tag. `latest` is only
 updated by a build using the newest stable wheel from `1CatAI/1Cat-vLLM`.
 
@@ -31,12 +33,13 @@ updated by a build using the newest stable wheel from `1CatAI/1Cat-vLLM`.
 | Trigger | Schedule | Action |
 |---------|----------|--------|
 | `Build Stable Docker Image` schedule | 03:00 UTC+8 every day | Check the newest stable wheel from `1CatAI/1Cat-vLLM` and build the stable image when needed. |
-| `Build Rolling Docker Image` hook | After `DSYZayn/1Cat-vLLM` publishes a rolling wheel | Build the matching rolling image immediately. |
+| `Build Rolling Docker Image` hook | After `DSYZayn/1Cat-vLLM` publishes a rolling wheel | Build the matching rolling image and create its daily release. |
 | Manual | On demand | Run either workflow independently. Stable accepts a release `version`; rolling accepts a rolling `release_tag`. |
 
 A new stable release published before the daily run will be available after
 that run. A rolling image is triggered by the source repository's publish hook,
-not by the daily schedule, and is never aliased to `latest`.
+and each successful build is retained as a daily release. Rolling images are
+never aliased to `latest`.
 
 The source repository must define a `DOCKER_REPOSITORY_DISPATCH_TOKEN` secret
 with permission to dispatch workflows in this repository. Without that secret,
@@ -73,7 +76,8 @@ docker run --gpus all -p 8000:8000 \
 ```
 
 To test a rolling build, replace the image with a date tag such as
-`ghcr.io/dsyzayn/1cat-vllm-v100-docker:v1.3.0-20260825`.
+`ghcr.io/dsyzayn/1cat-vllm-v100-docker:v1.3.0-20260825`. The corresponding
+GitHub release is `rolling-v1.3.0-20260825`.
 
 See the [1Cat-vLLM skill](https://github.com/1CatAI/1Cat-vLLM) for full
 launch parameters, model recommendations, and V100-specific notes.

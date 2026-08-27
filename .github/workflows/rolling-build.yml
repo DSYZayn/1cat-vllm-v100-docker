@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Rolling wheel release tag, e.g. v1.3.0-native-rolling. Leave empty for newest.'
+        description: 'Rolling wheel release tag, e.g. v1.3.0-native-rolling-20260828. Leave empty for newest.'
         required: false
         type: string
 
@@ -17,7 +17,7 @@ concurrency:
 
 permissions:
   packages: write
-  contents: read
+  contents: write
 
 env:
   REGISTRY: ghcr.io
@@ -45,7 +45,7 @@ jobs:
 
           requested_tag="${EVENT_RELEASE_TAG:-${INPUT_RELEASE_TAG}}"
           if [[ -n "${requested_tag}" ]]; then
-            if [[ ! "${requested_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)$ ]]; then
+            if [[ ! "${requested_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)(-[0-9]{8})?$ ]]; then
               echo "Invalid rolling release tag: ${requested_tag}" >&2
               exit 1
             fi
@@ -57,7 +57,7 @@ jobs:
             release_json="$(jq -c '
               map(select(
                 .prerelease == true and
-                (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(rolling|native-rolling)$"))
+                (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(rolling|native-rolling)(-[0-9]{8})?$"))
               ))
               | sort_by(.updated_at // .published_at // .created_at)
               | last // empty
@@ -78,7 +78,7 @@ jobs:
             '.assets[]? | select(.name == $name) | .browser_download_url' \
             <<< "${release_json}")"
 
-          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)$ ]]; then
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)(-[0-9]{8})?$ ]]; then
             echo "Release is not a rolling release: ${release_tag}" >&2
             exit 1
           fi
@@ -149,6 +149,47 @@ jobs:
           cache-from: type=gha,scope=rolling
           cache-to: type=gha,mode=max,scope=rolling
 
+      - name: Create daily image release
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          IMAGE_RELEASE_TAG: rolling-${{ needs.check.outputs.image_tag }}
+          VERSION: ${{ needs.check.outputs.image_tag }}
+          SOURCE_RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          WHEEL_VERSION: ${{ github.event.client_payload.wheel_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notes_file="$RUNNER_TEMP/rolling-image-release-notes.md"
+          cat > "$notes_file" <<EOF
+          # Rolling Docker Image ${VERSION}
+
+          - Image: \`${IMAGE}:${VERSION}\`
+          - Source wheel release: [\`${SOURCE_RELEASE_TAG}\`](https://github.com/${ROLLING_WHEEL_REPOSITORY}/releases/tag/${SOURCE_RELEASE_TAG})
+          - Wheel version: \`${WHEEL_VERSION:-unknown}\`
+          - Source commit: \`${SOURCE_SHA:-not provided by manual run}\`
+
+          This is a retained daily image release. The source wheel release
+          contains the commit range and the AI-or-fallback change summary.
+          EOF
+
+          if gh release view "$IMAGE_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$IMAGE_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Rolling Docker image ${VERSION}" \
+              --notes-file "$notes_file" \
+              --prerelease
+          else
+            gh release create "$IMAGE_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Rolling Docker image ${VERSION}" \
+              --notes-file "$notes_file" \
+              --prerelease
+          fi
+
+          echo "Daily image release: ${IMAGE_RELEASE_TAG}"
+
       - name: Rolling image summary
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
@@ -165,6 +206,7 @@ jobs:
             echo "Source wheel release: ${SOURCE_RELEASE_TAG}"
             echo "Source wheel release updated: ${UPDATED_AT}"
             echo "Wheel: ${WHEEL_URL}"
+            echo "Daily image release: rolling-${VERSION}"
             echo
             echo "The rolling image has no \`latest\` tag."
           } >> "${GITHUB_STEP_SUMMARY}"
