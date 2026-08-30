@@ -71,6 +71,18 @@ print('GPUs available:', torch.cuda.device_count()); \
 #     echo "SM70 JIT smoke test PASSED" && \
 #     rm /tmp/sm70_jit_smoke.cu /tmp/sm70_jit_smoke.cubin
 
-# Default entrypoint
-ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+# Default entrypoint. It preserves the original API-server invocation while
+# also providing VLLM_PRESTART_HOOK for package installs or runtime patches.
+COPY 1cat-vllm-entrypoint.sh /usr/local/bin/1cat-vllm-entrypoint
+RUN mkdir -p /usr/local/1cat-vllm/bin \
+    && VLLM_BIN="$(command -v vllm)" \
+    && test -n "${VLLM_BIN}" \
+    && cp "${VLLM_BIN}" /usr/local/1cat-vllm/bin/vllm-real
+COPY vllm-cli-wrapper.sh /usr/local/1cat-vllm/bin/vllm
+RUN chmod 0755 \
+        /usr/local/bin/1cat-vllm-entrypoint \
+        /usr/local/1cat-vllm/bin/vllm \
+        /usr/local/1cat-vllm/bin/vllm-real
+ENV PATH="/usr/local/1cat-vllm/bin:${PATH}"
+ENTRYPOINT ["/usr/local/bin/1cat-vllm-entrypoint"]
 CMD ["--host", "0.0.0.0", "--port", "8000"]
