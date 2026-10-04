@@ -1,6 +1,9 @@
 name: Build Rolling Docker Image
 
 on:
+  schedule:
+    # Poll away from the hour boundary. Only today's UTC+8 wheel is eligible.
+    - cron: '17 * * * *'
   repository_dispatch:
     types:
       - rolling-wheel-published
@@ -23,88 +26,37 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   ROLLING_WHEEL_REPOSITORY: DSYZayn/1Cat-vLLM
+  # Enable future daily updates without backfilling the interrupted period.
+  ROLLING_AUTO_START_DATE: '20261005'
   GH_TOKEN: ${{ github.token }}
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
+      should_build: ${{ steps.metadata.outputs.should_build }}
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       image_tag: ${{ steps.metadata.outputs.image_tag }}
       wheel_url: ${{ steps.metadata.outputs.wheel_url }}
       updated_at: ${{ steps.metadata.outputs.updated_at }}
+      wheel_version: ${{ steps.metadata.outputs.wheel_version }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Resolve rolling release metadata
         id: metadata
         env:
           EVENT_RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         shell: bash
-        run: |
-          set -euo pipefail
-
-          requested_tag="${EVENT_RELEASE_TAG:-${INPUT_RELEASE_TAG}}"
-          if [[ -n "${requested_tag}" ]]; then
-            if [[ ! "${requested_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)(-[0-9]{8})?$ ]]; then
-              echo "Invalid rolling release tag: ${requested_tag}" >&2
-              exit 1
-            fi
-            release_json="$(gh api \
-              "repos/${ROLLING_WHEEL_REPOSITORY}/releases/tags/${requested_tag}")"
-          else
-            releases_json="$(gh api \
-              "repos/${ROLLING_WHEEL_REPOSITORY}/releases?per_page=100")"
-            release_json="$(jq -c '
-              map(select(
-                .prerelease == true and
-                (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(rolling|native-rolling)(-[0-9]{8})?$"))
-              ))
-              | sort_by(.updated_at // .published_at // .created_at)
-              | last // empty
-            ' <<< "${releases_json}")"
-          fi
-
-          if [[ -z "${release_json}" ]]; then
-            echo "No rolling wheel release was found." >&2
-            exit 1
-          fi
-
-          release_tag="$(jq -r '.tag_name' <<< "${release_json}")"
-          updated_at="$(jq -r '.updated_at // .published_at // .created_at' <<< "${release_json}")"
-          wheel_name="$(jq -r \
-            '([.assets[]? | select(.name | test("cp312-cp312-linux_x86_64\\.whl$"))] | .[0].name) // empty' \
-            <<< "${release_json}")"
-          wheel_url="$(jq -r --arg name "${wheel_name}" \
-            '.assets[]? | select(.name == $name) | .browser_download_url' \
-            <<< "${release_json}")"
-
-          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rolling|native-rolling)(-[0-9]{8})?$ ]]; then
-            echo "Release is not a rolling release: ${release_tag}" >&2
-            exit 1
-          fi
-          if [[ -z "${wheel_name}" || -z "${wheel_url}" ]]; then
-            echo "No compatible rolling cp312 Linux x86_64 wheel found for ${release_tag}." >&2
-            exit 1
-          fi
-          if [[ ! "${wheel_name}" =~ ^1cat_vllm-([0-9]+\.[0-9]+\.[0-9]+)\.post([0-9]{8})-cp312-cp312-linux_x86_64\.whl$ ]]; then
-            echo "Unexpected rolling wheel name: ${wheel_name}" >&2
-            exit 1
-          fi
-
-          image_tag="v${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
-          echo "Rolling release: ${release_tag}"
-          echo "Rolling wheel: ${wheel_name}"
-          echo "Rolling image tag: ${image_tag}"
-
-          {
-            echo "release_tag=${release_tag}"
-            echo "image_tag=${image_tag}"
-            echo "wheel_url=${wheel_url}"
-            echo "updated_at=${updated_at}"
-          } >> "${GITHUB_OUTPUT}"
+        run: node .github/scripts/resolve-rolling-release.mjs
 
   build:
     needs: check
+    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -155,8 +107,8 @@ jobs:
           IMAGE_RELEASE_TAG: rolling-${{ needs.check.outputs.image_tag }}
           VERSION: ${{ needs.check.outputs.image_tag }}
           SOURCE_RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
-          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
-          WHEEL_VERSION: ${{ github.event.client_payload.wheel_version }}
+          SOURCE_SHA: ${{ needs.check.outputs.source_sha }}
+          WHEEL_VERSION: ${{ needs.check.outputs.wheel_version }}
         shell: bash
         run: |
           set -euo pipefail

@@ -34,17 +34,28 @@ updated by a build using the newest stable wheel from `1CatAI/1Cat-vLLM`.
 |---------|----------|--------|
 | `Build Stable Docker Image` schedule | 03:00 UTC+8 every day | Check the newest stable wheel from `1CatAI/1Cat-vLLM` and build the stable image when needed. |
 | `Build Rolling Docker Image` hook | After `DSYZayn/1Cat-vLLM` publishes a rolling wheel | Build the matching rolling image and create its daily release. |
+| `Build Rolling Docker Image` schedule | Every hour at minute 17 | Starting October 5, 2026 (UTC+8), discover today's completed wheel and build its image if no completed daily image release exists. Historical dates are not backfilled. |
 | Manual | On demand | Run either workflow independently. Stable accepts a release `version`; rolling accepts a rolling `release_tag`. |
 
 A new stable release published before the daily run will be available after
-that run. A rolling image is triggered by the source repository's publish hook,
-and each successful build is retained as a daily release. Rolling images are
-never aliased to `latest`.
+that run. Rolling images are discovered by the hourly check, with the source
+repository's publish hook providing an optional earlier trigger. Both automatic
+paths only accept the current UTC+8 date, skip incomplete uploads, and skip
+images with an existing completed daily release. A late wheel is picked up by
+a subsequent check that day. Each successful build is retained as a daily
+release. Rolling images are never aliased to `latest`.
 
-The source repository must define a `DOCKER_REPOSITORY_DISPATCH_TOKEN` secret
-with permission to dispatch workflows in this repository. Without that secret,
-the wheel publish still succeeds but the hook emits a warning and no rolling
-image is built.
+The optional publish hook uses the source repository's
+`DOCKER_REPOSITORY_DISPATCH_TOKEN` secret. If it is absent or invalid, Wheel
+publication and this repository's scheduled discovery continue independently.
+The scheduled check uses this repository's `GITHUB_TOKEN` to read public wheel
+releases, so it does not require that cross-repository token.
+
+Validate rolling release selection without building or publishing anything:
+
+```sh
+node --test tests/rolling-release.test.mjs
+```
 
 ## Image Details
 
