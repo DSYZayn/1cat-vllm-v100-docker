@@ -95,7 +95,7 @@ the original vLLM implementation.
 ```bash
 docker run --gpus all -p 8000:8000 \
   -v /path/to/models:/models:ro \
-  ghcr.io/renne/1cat-vllm-v100:latest \
+  ghcr.io/dsyzayn/1cat-vllm-v100:latest \
   --model /models/Qwen3.6-35B-A3B-AWQ \
   --attention-backend FLASH_ATTN_V100 \
   --tensor-parallel-size 2 \
